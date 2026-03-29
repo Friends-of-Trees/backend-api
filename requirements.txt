@@ -3,3 +3,7 @@ uvicorn==0.40.0
 supabase==2.27.3
 python-dotenv==1.1.0
 python-multipart==0.0.22
+transformers
+torch
+pillow
+requests
