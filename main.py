@@ -74,8 +74,8 @@ async def assign_winner(data: WinnerAssignment):
 # -------------------------------------------------
 # TEST ROUTE
 # -------------------------------------------------
-@app.get("/test")
-def test():
+@app.get("/")
+def root():
     return {"status": "backend working"}
 
 # -------------------------------------------------
