@@ -1,3 +1,5 @@
+from fastapi import Body
+from ai_detector import is_ai_image_from_url
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel # <--- 1. Add this import
@@ -72,6 +74,13 @@ async def assign_winner(data: WinnerAssignment):
         raise HTTPException(status_code=500, detail="Database update failed")
 
 # -------------------------------------------------
+# ROOT / HEALTH CHECK
+# -------------------------------------------------
+@app.get("/")
+def root():
+    return {"status": "backend working"}
+
+# -------------------------------------------------
 # TEST ROUTE
 # -------------------------------------------------
 @app.get("/test")
@@ -117,6 +126,8 @@ async def submit_entry(
     entry_id = entry.data[0]["id"]
 
     # 2️⃣ Upload images
+    image_urls = []
+
     for photo in photos:
         # Skip empty uploads
         if not photo.filename:
@@ -155,6 +166,24 @@ async def submit_entry(
             }
         ).execute()
 
+        image_urls.append(public_url)
+
+    # AI detection: determine entry-level AI status (true if any image flagged AI)
+    ai_flag = None
+    for url in image_urls:
+        try:
+            result = is_ai_image_from_url(url)
+            if result is True:
+                ai_flag = True
+                break
+            if result is False and ai_flag is None:
+                ai_flag = False
+        except Exception:
+            continue
+
+    if ai_flag is not None:
+        supabase.table("competition_entries").update({"is_ai_generated": ai_flag}).eq("id", entry_id).execute()
+
     return {"status": "success", "entry_id": entry_id}
 
 # ... keep admin/entries, but update table names there too ...
@@ -179,3 +208,69 @@ def get_entries():
         entry["images"] = images
 
     return entries
+
+@app.post("/admin/scan-ai")
+def scan_ai_entries():
+    entries = (
+        supabase.table("competition_entries")
+        .select("id, is_ai_generated")
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
+
+    updated = 0
+    errors = []
+
+    for entry in entries:
+        if entry.get("is_ai_generated") is not None:
+            continue
+
+        images = (
+            supabase.table("entry_images")
+            .select("image_url")
+            .eq("entry_id", entry["id"])
+            .execute()
+            .data
+        )
+
+        if not images:
+            continue
+
+        image_url = images[0].get("image_url")
+        if not image_url:
+            continue
+
+        try:
+            ai_status = is_ai_image_from_url(image_url)
+            if ai_status is not None:
+                supabase.table("competition_entries").update({"is_ai_generated": ai_status}).eq("id", entry["id"]).execute()
+                updated += 1
+        except Exception as exc:
+            errors.append({"entry_id": entry["id"], "error": str(exc)})
+
+    return {"updated": updated, "checked": len(entries), "errors": errors}
+
+@app.post("/detect-ai-batch")
+async def detect_ai_batch(data: dict):
+    image_urls = data.get("image_urls")
+
+    if not image_urls or not isinstance(image_urls, list):
+        return {"error": "image_urls must be a list"}
+
+    results = []
+
+    for url in image_urls:
+        try:
+            is_ai = is_ai_image_from_url(url)
+            results.append({
+                "image_url": url,
+                "is_ai": is_ai
+            })
+        except:
+            results.append({
+                "image_url": url,
+                "is_ai": None
+            })
+
+    return {"results": results}
